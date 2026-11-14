@@ -69,6 +69,20 @@ LOG_PORT=8792 node tools/log-receiver.js
 - **下一节**：立即跳到本节末尾，触发切章
 - **日志**：导出 `.log` 文件
 
+### 3.1 控制台直跑（Tampermonkey 不生效时）
+
+如果 Tampermonkey 提示「此脚本还未被执行」，可用这条路径绕过扩展直接验证：
+
+1. 打开课程播放页 `kc.jxjypt.cn/classroom/start?...`
+2. `F12` → Console
+3. 若提示 `Warning: Don't paste code...`，先手动输入 `allow pasting` 回车
+4. 打开 `dist/console-run.js`，全选复制，粘贴进 Console，回车
+5. 出现右下角面板即成功
+
+控制台版与油猴版功能完全一致，只是存储从 `GM_*` 降级为 `localStorage`，日志推送从 `GM_xmlhttpRequest` 降级为 `fetch`。
+
+控制台版**关闭页面即失效**，适合先验证功能是否正常。
+
 ## 四、可调参数
 
 脚本顶部 `CFG`：

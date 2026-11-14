@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         江西继续教育 自动连播 (kc.jxjypt.cn)
 // @namespace    https://github.com/wangpangzi97/jxjypt
-// @version      1.0.1
+// @version      1.0.2
 // @description  章节视频自动播放，播完自动下一节；章节内多段视频逐段播完；验证码弹出即暂停并提示；日志实时落盘到本地
 // @author       wangpangzi97
 // @match        https://kc.jxjypt.cn/*
@@ -17,6 +17,15 @@
 (function () {
     'use strict';
 
+    const VERSION = '1.0.2';
+
+    // 幂等保护：油猴重复注入或控制台重复粘贴时，避免出现两个面板、两套循环
+    if (window.__JXA_LOADED__) {
+        console.warn('[自动连播] 已存在运行实例（' + window.__JXA_LOADED__ + '），本次注入跳过');
+        return;
+    }
+    window.__JXA_LOADED__ = VERSION;
+
     /* ============================ 配置 ============================ */
     const CFG = {
         SPEED: 1.0,                 // 播放倍速，1.0 = 原速（最稳）
@@ -30,12 +39,67 @@
         LOG_PUSH_MIN_MS: 800,       // 日志推送最小间隔
     };
 
+    /* ============================ 环境适配（油猴 / 控制台） ============================ */
+    // 同时支持 Tampermonkey 注入和直接粘贴到浏览器控制台运行，
+    // 便于在油猴不注入时快速定位是脚本问题还是扩展配置问题。
+    const HAS_GM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
+    const HAS_GM_XHR = typeof GM_xmlhttpRequest === 'function';
+
+    const store = {
+        get(key, def) {
+            try {
+                if (HAS_GM) {
+                    const v = GM_getValue(key, def);
+                    return v === undefined ? def : v;
+                }
+                const raw = localStorage.getItem('jxa_' + key);
+                return raw === null ? def : JSON.parse(raw);
+            } catch (e) {
+                return def;
+            }
+        },
+        set(key, val) {
+            try {
+                if (HAS_GM) GM_setValue(key, val);
+                else localStorage.setItem('jxa_' + key, JSON.stringify(val));
+            } catch (e) { /* 配额异常忽略 */ }
+        },
+    };
+
+    function postLog(text) {
+        if (HAS_GM_XHR) {
+            GM_xmlhttpRequest({
+                method: 'POST',
+                url: CFG.LOG_ENDPOINT,
+                headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
+                data: text,
+                timeout: 5000,
+                onload: (res) => {
+                    if (res.status >= 400) markEndpointDown(res.status);
+                },
+                onerror: () => markEndpointDown('network'),
+                ontimeout: () => markEndpointDown('timeout'),
+            });
+            return;
+        }
+        fetch(CFG.LOG_ENDPOINT, {
+            method: 'POST',
+            headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
+            body: text,
+            keepalive: true,
+        }).then((r) => {
+            if (!r.ok) markEndpointDown(r.status);
+        }).catch(() => markEndpointDown('network'));
+    }
+
+    const savedCompleted = store.get('completed', []);
+
     /* ============================ 状态 ============================ */
     const S = {
         running: true,
         paused: false,
         logs: [],
-        completed: new Set(GM_getValue('completed', [])),
+        completed: new Set(Array.isArray(savedCompleted) ? savedCompleted : []),
         captchaWaiting: false,
         lastTime: 0,
         lastProgressAt: Date.now(),
@@ -85,8 +149,8 @@
         S.saveTimer = setTimeout(() => {
             S.saveTimer = null;
             try {
-                GM_setValue('logs', S.logs.slice(-1500).join('\n'));
-                GM_setValue('completed', Array.from(S.completed));
+                store.set('logs', S.logs.slice(-1500).join('\n'));
+                store.set('completed', Array.from(S.completed));
             } catch (e) { /* 配额异常忽略 */ }
         }, 3000);
     }
@@ -99,18 +163,7 @@
         S.lastPushAt = now;
         const payload = S.pushQueue.splice(0, S.pushQueue.length).join('\n');
         try {
-            GM_xmlhttpRequest({
-                method: 'POST',
-                url: CFG.LOG_ENDPOINT,
-                headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
-                data: payload,
-                timeout: 5000,
-                onload: (res) => {
-                    if (res.status >= 400) markEndpointDown(res.status);
-                },
-                onerror: () => markEndpointDown('network'),
-                ontimeout: () => markEndpointDown('timeout'),
-            });
+            postLog(payload);
         } catch (e) {
             markEndpointDown(e.message);
         }
@@ -396,7 +449,7 @@
 
         box.innerHTML = `
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
-                <strong style="font-size:13px;color:#8ab4f8">自动连播 v1.0.0</strong>
+                <strong style="font-size:13px;color:#8ab4f8">自动连播 v${VERSION}</strong>
                 <span id="jxa-dot" style="width:8px;height:8px;border-radius:50%;background:#34a853;display:inline-block"></span>
             </div>
             <div id="jxa-status" style="color:#9aa0a6;word-break:break-all;min-height:34px">初始化中</div>
@@ -466,7 +519,8 @@
     }
 
     function boot() {
-        console.log('%c[自动连播] v1.0.1 已注入', 'color:#34a853;font-weight:bold', location.href);
+        const env = HAS_GM ? 'Tampermonkey' : '控制台';
+        console.log('%c[自动连播] v' + VERSION + ' 已注入（' + env + '）', 'color:#34a853;font-weight:bold', location.href);
 
         if (!IS_PLAY_PAGE) {
             console.log('[自动连播] 当前页不是播放页（需包含 /classroom/start），脚本待命不执行');
