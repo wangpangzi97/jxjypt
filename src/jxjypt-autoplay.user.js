@@ -1,10 +1,11 @@
 // ==UserScript==
 // @name         江西继续教育 自动连播 (kc.jxjypt.cn)
 // @namespace    https://github.com/wangpangzi97/jxjypt
-// @version      1.0.0
+// @version      1.0.1
 // @description  章节视频自动播放，播完自动下一节；章节内多段视频逐段播完；验证码弹出即暂停并提示；日志实时落盘到本地
 // @author       wangpangzi97
-// @match        https://kc.jxjypt.cn/classroom/start*
+// @match        https://kc.jxjypt.cn/*
+// @match        http://kc.jxjypt.cn/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setValue
 // @grant        GM_getValue
@@ -448,11 +449,38 @@
     }
 
     /* ============================ 启动 ============================ */
+    const IS_PLAY_PAGE = /\/classroom\/start/.test(location.pathname);
+
+    function flashBadge(text, color) {
+        const b = document.createElement('div');
+        b.textContent = text;
+        b.style.cssText = [
+            'position:fixed', 'left:16px', 'top:16px', 'z-index:999999',
+            'padding:8px 14px', 'border-radius:8px',
+            'background:' + (color || '#34a853'), 'color:#fff',
+            'font:13px/1.5 -apple-system,Segoe UI,Microsoft YaHei,sans-serif',
+            'box-shadow:0 4px 16px rgba(0,0,0,.3)', 'pointer-events:none',
+        ].join(';');
+        document.body.appendChild(b);
+        setTimeout(() => b.remove(), 4000);
+    }
+
     function boot() {
+        console.log('%c[自动连播] v1.0.1 已注入', 'color:#34a853;font-weight:bold', location.href);
+
+        if (!IS_PLAY_PAGE) {
+            console.log('[自动连播] 当前页不是播放页（需包含 /classroom/start），脚本待命不执行');
+            flashBadge('自动连播已注入，但当前不是播放页', '#fbbc04');
+            return;
+        }
+
         buildPanel();
-        log('面板已就绪');
+        flashBadge('自动连播已加载');
+        log('面板已就绪，当前页：' + location.href);
         main().catch((e) => log('主流程异常：' + (e && e.stack ? e.stack : e), 'ERROR'));
     }
+
+    console.log('[自动连播] 脚本已注入，等待 DOM 就绪…');
 
     if (document.readyState === 'complete' || document.readyState === 'interactive') {
         setTimeout(boot, 800);
