@@ -1,5 +1,7 @@
 # jxjypt-autoplay
 
+仓库：https://github.com/wangpangzi97/jxjypt
+
 `kc.jxjypt.cn`（江西继续教育）课程页自动连播 Tampermonkey 脚本。
 
 - 视频自动播放，**播完自动进入下一节**
@@ -84,8 +86,8 @@ LOG_PORT=8792 node tools/log-receiver.js
 脚本头部有 `@version`，改动后递增。私有仓库的自动更新需要带 token 的 raw 地址：
 
 ```
-@updateURL    https://<TOKEN>@raw.githubusercontent.com/wangpangzi97/jxjypt-autoplay/main/src/jxjypt-autoplay.user.js
-@downloadURL  https://<TOKEN>@raw.githubusercontent.com/wangpangzi97/jxjypt-autoplay/main/src/jxjypt-autoplay.user.js
+@updateURL    https://<TOKEN>@raw.githubusercontent.com/wangpangzi97/jxjypt/main/src/jxjypt-autoplay.user.js
+@downloadURL  https://<TOKEN>@raw.githubusercontent.com/wangpangzi97/jxjypt/main/src/jxjypt-autoplay.user.js
 ```
 
 不想放 token 就手动更新：打开仓库 → 复制新文件内容 → 粘贴覆盖。

@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         江西继续教育 自动连播 (kc.jxjypt.cn)
-// @namespace    https://github.com/wangpangzi97/jxjypt-autoplay
+// @namespace    https://github.com/wangpangzi97/jxjypt
 // @version      1.0.0
 // @description  章节视频自动播放，播完自动下一节；章节内多段视频逐段播完；验证码弹出即暂停并提示；日志实时落盘到本地
 // @author       wangpangzi97
