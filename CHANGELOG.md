@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.0.3] - 2026-11-14
+
+### 修复
+- **修复 68 个章节全部「加载超时」的致命问题**：Tampermonkey MV3 沙箱与页面 world 隔离，`window.courses` / `window.g_chapterId` / `window.vodPlayer` 读不到，导致加载判定永远为 false
+- 新增 `@grant unsafeWindow`，所有页面全局变量改经 `unsafeWindow` 访问
+- 新增播放器双层降级：Aliplayer API 不可用时自动改用原生 `<video>` 元素（play/pause/seek/currentTime/duration）
+- 章节加载判定改为纯 DOM 信号（`#course-title` 文本变化 + video 元素变化），不再依赖页面全局变量
+- 视频列表改为从 `#chapter-video-list .chapter_video` 读取，单视频章节自动兜底
+- 启动时输出环境诊断日志（unsafeWindow / courses / vodPlayer 可见性）
+
 ## [1.0.2] - 2026-11-14
 
 ### 新增

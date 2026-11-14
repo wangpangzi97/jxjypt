@@ -1,11 +1,12 @@
 // ==UserScript==
 // @name         江西继续教育 自动连播 (kc.jxjypt.cn)
 // @namespace    https://github.com/wangpangzi97/jxjypt
-// @version      1.0.2
+// @version      1.0.3
 // @description  章节视频自动播放，播完自动下一节；章节内多段视频逐段播完；验证码弹出即暂停并提示；日志实时落盘到本地
 // @author       wangpangzi97
 // @match        https://kc.jxjypt.cn/*
 // @match        http://kc.jxjypt.cn/*
+// @grant        unsafeWindow
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setValue
 // @grant        GM_getValue
@@ -17,7 +18,7 @@
 (function () {
     'use strict';
 
-    const VERSION = '1.0.2';
+    const VERSION = '1.0.3';
 
     // 幂等保护：油猴重复注入或控制台重复粘贴时，避免出现两个面板、两套循环
     if (window.__JXA_LOADED__) {
@@ -25,6 +26,11 @@
         return;
     }
     window.__JXA_LOADED__ = VERSION;
+
+    // 页面上下文引用：Tampermonkey MV3 沙箱与页面 world 隔离，
+    // 页面的 var 全局变量（g_chapterId / courses / vodPlayer）在 window 上读不到，
+    // 必须经 unsafeWindow 访问；控制台环境下没有 unsafeWindow，退回 window。
+    const W = (typeof unsafeWindow !== 'undefined' && unsafeWindow) ? unsafeWindow : window;
 
     /* ============================ 配置 ============================ */
     const CFG = {
@@ -188,8 +194,120 @@
         }));
     }
 
+    /* ==================== 播放器控制层（Aliplayer → 原生 video 双层降级） ==================== */
     function getPlayer() {
-        return window.vodPlayer && typeof window.vodPlayer.getStatus === 'function' ? window.vodPlayer : null;
+        try {
+            const p = W.vodPlayer;
+            if (p && typeof p.getStatus === 'function') return p;
+        } catch (e) { /* 沙箱不可见 */ }
+        return null;
+    }
+
+    function getVideoEl() {
+        return document.querySelector('#video-content video') || document.querySelector('.prism-player video');
+    }
+
+    // 统一状态读取：优先 Aliplayer API，失败则读原生 video 元素
+    function readState() {
+        const p = getPlayer();
+        if (p) {
+            try {
+                return { st: p.getStatus(), ct: p.getCurrentTime(), dur: p.getDuration(), src: 'aliplayer' };
+            } catch (e) { /* 降级 */ }
+        }
+        const v = getVideoEl();
+        if (v) {
+            const st = v.ended ? 'ended' : (v.paused ? 'pause' : 'playing');
+            return { st, ct: v.currentTime || 0, dur: v.duration || 0, src: 'video' };
+        }
+        return null;
+    }
+
+    function doPlay() {
+        const p = getPlayer();
+        if (p) {
+            try { p.play(); return true; } catch (e) { /* 降级 */ }
+        }
+        const v = getVideoEl();
+        if (v) {
+            try { v.play().catch(() => {}); return true; } catch (e) { /* ignore */ }
+        }
+        return false;
+    }
+
+    function doPause() {
+        const p = getPlayer();
+        if (p) {
+            try { p.pause(); return; } catch (e) { /* 降级 */ }
+        }
+        const v = getVideoEl();
+        if (v) { try { v.pause(); } catch (e) { /* ignore */ } }
+    }
+
+    function doSeek(t) {
+        const p = getPlayer();
+        if (p) {
+            try { p.seek(t); return; } catch (e) { /* 降级 */ }
+        }
+        const v = getVideoEl();
+        if (v) { try { v.currentTime = t; } catch (e) { /* ignore */ } }
+    }
+
+    function doSetSpeed(rate) {
+        const p = getPlayer();
+        if (p && typeof p.setSpeed === 'function') {
+            try { p.setSpeed(rate); return; } catch (e) { /* 降级 */ }
+        }
+        const v = getVideoEl();
+        if (v) { try { v.playbackRate = rate; } catch (e) { /* ignore */ } }
+    }
+
+    // 本章视频列表：优先读 DOM（不受沙箱影响），读不到再退回页面 courses 数组
+    function getVideoList() {
+        const items = Array.from(document.querySelectorAll('#chapter-video-list .chapter_video'));
+        if (items.length > 0) {
+            return items.map((el) => ({
+                id: el.id,
+                name: (el.textContent || '').trim().replace(/\s+/g, ' ') || el.id,
+                el,
+            }));
+        }
+        // 单视频章节：列表容器被隐藏，整章只有一段
+        try {
+            const arr = W.courses;
+            if (Array.isArray(arr) && arr.length > 0) {
+                return arr.map((c) => ({ id: String(c.id), name: c.name || String(c.id), el: null }));
+            }
+        } catch (e) { /* 沙箱不可见 */ }
+        return [{ id: null, name: '本章视频', el: null }];
+    }
+
+    function switchVideo(item) {
+        if (item.el) {
+            item.el.click();   // 触发页面内联 onclick="showVideo(id)"
+            return;
+        }
+        if (item.id && typeof W.showVideo === 'function') {
+            try { W.showVideo(item.id); return; } catch (e) { /* ignore */ }
+        }
+        if (item.id) {
+            const el = document.getElementById(item.id);
+            if (el) el.click();
+        }
+    }
+
+    // 章节加载完成判定：纯 DOM 信号，不依赖页面全局变量
+    // 最强信号是标题文本发生变化；其次才是视频元素/视频列表的变化
+    function chapterLoaded(dd, prevVideoEl, prevTitle, prevListCount) {
+        const titleEl = document.querySelector('#course-title');
+        const title = (titleEl ? titleEl.textContent : '').trim();
+        if (!title) return false;
+        if (prevTitle !== undefined && title !== prevTitle) return true;
+        const videoEl = getVideoEl();
+        if (videoEl && videoEl !== prevVideoEl) return true;
+        const listCount = document.querySelectorAll('#chapter-video-list .chapter_video').length;
+        if (listCount > 0 && listCount !== prevListCount) return true;
+        return false;
     }
 
     function captchaVisible() {
@@ -236,40 +354,41 @@
         return idx >= 0 ? idx : 0;
     }
 
-    async function playOneVideo(course, label) {
-        const cid = String(course.id);
-        if (String(window.currentCourseId) !== cid) {
-            if (typeof window.showVideo === 'function') {
-                window.showVideo(cid);
-            } else {
-                const el = document.getElementById(cid);
-                if (el) el.click();
-            }
+    async function playOneVideo(item, label) {
+        // 多段章节：切到目标视频；单段章节：直接播当前
+        if (item.el) {
+            const cur = document.querySelector('#chapter-video-list .chapter_video.video_current');
+            if (!cur || cur.id !== item.id) switchVideo(item);
+        } else if (item.id) {
+            let curId = '';
+            try { curId = String(W.currentCourseId || ''); } catch (e) { /* 沙箱不可见 */ }
+            if (curId !== String(item.id)) switchVideo(item);
         }
 
         const ready = await waitFor(() => {
-            const p = getPlayer();
-            return p && p.getDuration() > 0;
+            const s = readState();
+            return s && s.dur > 0;
         }, CFG.PLAYER_TIMEOUT_MS);
 
         if (!ready) {
-            log(`  ${label} 播放器就绪超时，跳过`, 'ERROR');
+            const s = readState();
+            log(`  ${label} 播放器未就绪（state=${s ? s.st : 'null'}），跳过`, 'ERROR');
             return false;
         }
 
-        const p = getPlayer();
-        try { if (p.setSpeed && CFG.SPEED !== 1) p.setSpeed(CFG.SPEED); } catch (e) { /* 部分模式禁倍速 */ }
-        try { p.play(); } catch (e) { log('  play() 异常：' + e.message, 'WARN'); }
+        const dur0 = readState().dur;
+        doSetSpeed(CFG.SPEED);
+        doPlay();
 
         S.lastTime = 0;
         S.lastProgressAt = Date.now();
-        log(`  ${label} 开始播放，时长 ${fmt(p.getDuration())}`);
+        log(`  ${label} 开始播放，时长 ${fmt(dur0)}`);
 
         while (S.running) {
             await sleep(CFG.POLL_MS);
 
             if (S.paused) {
-                try { p.pause(); } catch (e) { /* ignore */ }
+                doPause();
                 S.statusText = '已暂停（手动）';
                 continue;
             }
@@ -279,48 +398,39 @@
                 continue;
             }
 
-            let st = '';
-            let ct = 0;
-            let dur = 0;
-            try {
-                st = p.getStatus();
-                ct = p.getCurrentTime();
-                dur = p.getDuration();
-            } catch (e) {
-                log('  读取播放状态失败：' + e.message, 'ERROR');
+            const s = readState();
+            if (!s) {
                 await sleep(2000);
                 continue;
             }
 
-            if (ct > S.lastTime + 0.2) {
-                S.lastTime = ct;
+            if (s.ct > S.lastTime + 0.2) {
+                S.lastTime = s.ct;
                 S.lastProgressAt = Date.now();
-                S.statusText = `播放中 ${fmt(ct)} / ${fmt(dur)}`;
+                S.statusText = `播放中 ${fmt(s.ct)} / ${fmt(s.dur)}`;
                 renderPanel();
             }
 
-            if (st === 'ended' || (dur > 0 && ct >= dur - 1.5)) {
-                log(`  ${label} 播放完成 (${fmt(ct)} / ${fmt(dur)})，等待上报…`);
+            if (s.st === 'ended' || (s.dur > 0 && s.ct >= s.dur - 1.5)) {
+                log(`  ${label} 播放完成 (${fmt(s.ct)} / ${fmt(s.dur)})，等待上报…`);
                 await sleep(CFG.END_GRACE_MS);
                 return true;
             }
 
-            if (st === 'pause' || st === 'ready' || st === 'loading') {
-                try { p.play(); } catch (e) { /* ignore */ }
+            if (s.st === 'pause' || s.st === 'ready' || s.st === 'loading' || s.st === 'idle') {
+                doPlay();
             }
 
-            if (st === 'error') {
+            if (s.st === 'error') {
                 log('  播放器报错，尝试恢复', 'WARN');
-                try { p.play(); } catch (e) { /* ignore */ }
+                doPlay();
                 await sleep(3000);
             }
 
             if (Date.now() - S.lastProgressAt > CFG.STALL_TIMEOUT_MS) {
                 log('  长时间无进度，强制续播', 'WARN');
-                try {
-                    p.seek(Math.min(S.lastTime + 1, Math.max(0, dur - 2)));
-                    p.play();
-                } catch (e) { /* ignore */ }
+                doSeek(Math.min(S.lastTime + 1, Math.max(0, s.dur - 2)));
+                doPlay();
                 S.lastProgressAt = Date.now();
             }
         }
@@ -333,13 +443,13 @@
             S.statusText = '⚠ 等待人工滑块验证';
             log('检测到滑块验证，已暂停自动操作，请手动完成验证', 'WARN');
             beep();
-            try { const p = getPlayer(); if (p) p.pause(); } catch (e) { /* ignore */ }
+            doPause();
             renderPanel();
         }
         while (S.running && captchaVisible()) await sleep(1000);
         S.captchaWaiting = false;
         log('验证已通过，继续播放');
-        try { const p = getPlayer(); if (p) p.play(); } catch (e) { /* ignore */ }
+        doPlay();
         S.lastProgressAt = Date.now();
     }
 
@@ -348,54 +458,65 @@
         S.statusText = `加载章节 ${idx + 1}/${total}`;
         renderPanel();
 
-        const prevCourses = window.courses;
-        const needSwitch = String(window.g_chapterId) !== dd.id;
+        const prevVideoEl = getVideoEl();
+        const prevTitle = (() => {
+            const t = document.querySelector('#course-title');
+            return t ? t.textContent.trim() : '';
+        })();
+        const prevListCount = document.querySelectorAll('#chapter-video-list .chapter_video').length;
+
+        let curChapter = '';
+        try { curChapter = String(W.g_chapterId || ''); } catch (e) { /* 沙箱不可见 */ }
+        const needSwitch = curChapter !== dd.id;
+
         if (needSwitch) {
             dd.el.click();
+            log(`  切换章节：${curChapter || '(空)'} → ${dd.id}`);
         }
 
-        // 注意：切章后 window.courses 会短暂保留上一章的数组，
-        // 必须等引用变化，否则会误判为已加载并重播上一章的视频。
-        const loaded = await waitFor(() => {
-            if (String(window.g_chapterId) !== dd.id) return false;
-            if (needSwitch && window.courses === prevCourses) return false;
-            if (!needSwitch && !Array.isArray(window.courses)) return false;
-            return true;
-        }, CFG.SWITCH_TIMEOUT_MS);
+        // 纯 DOM 判定，不依赖页面全局变量，避免沙箱隔离导致永远判定失败
+        const loaded = needSwitch
+            ? await waitFor(() => chapterLoaded(dd, prevVideoEl, prevTitle, prevListCount), CFG.SWITCH_TIMEOUT_MS)
+            : await waitFor(() => !!getVideoEl() || getVideoList().length > 0, CFG.PLAYER_TIMEOUT_MS);
 
         if (!loaded) {
-            log('章节资源加载超时，跳过本章', 'ERROR');
+            const t = document.querySelector('#course-title');
+            const title = t ? t.textContent.trim() : '';
+            log(`章节加载超时：标题="${title}" 视频元素=${!!getVideoEl()}，跳过本章`, 'ERROR');
             return false;
         }
 
-        if (!Array.isArray(window.courses) || window.courses.length === 0) {
-            log('本章无视频资源（可能为文档课件），跳过', 'WARN');
-            return false;
-        }
-
-        const courses = Array.from(window.courses);
-        log(`本章共 ${courses.length} 段视频`);
+        const videos = getVideoList();
+        log(`本章共 ${videos.length} 段视频`);
 
         let okCount = 0;
-        for (let i = 0; i < courses.length; i++) {
+        for (let i = 0; i < videos.length; i++) {
             if (!S.running) return false;
-            const label = `第${i + 1}/${courses.length}段`;
-            const ok = await playOneVideo(courses[i], label);
+            const label = `第${i + 1}/${videos.length}段`;
+            const ok = await playOneVideo(videos[i], label);
             if (ok) okCount++;
         }
 
-        if (okCount === courses.length) {
+        if (okCount === videos.length) {
             S.completed.add(dd.id);
             scheduleSave();
-            log(`本章全部完成（${okCount}/${courses.length}）`);
+            log(`本章全部完成（${okCount}/${videos.length}）`);
         } else {
-            log(`本章部分完成（${okCount}/${courses.length}）`, 'WARN');
+            log(`本章部分完成（${okCount}/${videos.length}）`, 'WARN');
         }
         await sleep(CFG.END_GRACE_MS);
-        return okCount === courses.length;
+        return okCount === videos.length;
     }
 
     async function main() {
+        const diag = (() => {
+            let c = 'null';
+            let v = 'null';
+            try { c = Array.isArray(W.courses) ? ('array(' + W.courses.length + ')') : typeof W.courses; } catch (e) { c = 'error'; }
+            try { v = W.vodPlayer ? 'object' : 'null'; } catch (e) { v = 'error'; }
+            return `unsafeWindow=${typeof unsafeWindow !== 'undefined'} courses=${c} vodPlayer=${v}`;
+        })();
+        log('环境诊断：' + diag);
         log('脚本启动，等待页面就绪…');
         const ready = await waitFor(() => {
             return getDds().length > 0 && document.getElementById('pagecode');
@@ -466,15 +587,13 @@
             S.paused = !S.paused;
             e.target.textContent = S.paused ? '继续' : '暂停';
             log(S.paused ? '手动暂停' : '手动继续');
-            if (!S.paused) {
-                try { const p = getPlayer(); if (p) p.play(); } catch (err) { /* ignore */ }
-            }
+            if (!S.paused) doPlay();
         });
 
         box.querySelector('#jxa-next').addEventListener('click', () => {
             log('手动跳到下一节', 'WARN');
-            const p = getPlayer();
-            try { if (p) p.seek(p.getDuration()); } catch (e) { /* ignore */ }
+            const s = readState();
+            if (s && s.dur > 0) doSeek(Math.max(0, s.dur - 1));
         });
 
         box.querySelector('#jxa-export').addEventListener('click', exportLogs);
